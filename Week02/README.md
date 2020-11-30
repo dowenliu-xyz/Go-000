@@ -16,7 +16,8 @@ Go `error` 就是普通的一个接口。常使用 `errors.New()`来返回一个
 > A: 防止同字面值创建的 `error` 被判断相等。
 > `errors`包中`errorString`是值类型，同样内容的 `errorString` 变量会被判断为相等，
 > 但不同的 `errorString` 变量的地址不同，
-> 所以要返回指针值，保证同样的值（也就是地址）不会被外部创建出来。
+> 所以要返回指针值，保证同样的值（也就是地址）不会被外部创建出来。参考
+> [demo](./cmd/why_errors_new_ptr/demo.go)
 
 ### 其他语言的演进历史：
 * C  
@@ -45,7 +46,8 @@ Go panic 意味着 fatal error(就是挂了)。不能假设调用者来解决 pa
 捕获 panic 、打印并 abort 掉请求，响应失败
 
 * 避免创建"野生" goroutine  
-不要直接使用 go 关键字，使用一个如下的方式创建 goroutine
+不要直接使用 go 关键字，使用一个如下的方式创建 goroutine。参见demo: 
+[bad](./cmd/go/bad/bad.go) 和 [better](./cmd/go/better/better.go)
 ```go
 package sync
 
