@@ -1,5 +1,7 @@
 学习笔记
 ---
+[homework](./homework.md)
+
 > 技巧：看一手资料，优先看官方文档，不要看非官方的翻译
 
 # Error 错误处理
@@ -191,6 +193,9 @@ func IsTemporary(err error) bool {
 
 **只对行为感兴趣**
 
+> 典型使用：[k8s api errors](https://github.com/kubernetes/apimachinery/blob/master/pkg/api/errors/errors.go)
+> 中各种 IsXXX 方法
+
 ## Handing Error 高效处理Error的套路
 
 ### Indented flow is for errors 缩进的代码只是用于处理错误
@@ -215,7 +220,7 @@ func Authenticate(r *Request) error {
 // 1-4 行是没有意义的，直接返回 `authenticate()`方法的结果就好了
 ```
 
-* 使用合适的工具
+* 通过包装重复的错误处理过程，简化错误处理
 
 使用`io.Reader`读取内容的行数
 ```go
@@ -268,8 +273,134 @@ func CountLines(r io.Reader) (int, error) {
 }
 ```
 
-### 
+类似的，还有 `sql.Rows`。
 
-## Go 1.13 errors 1.13 Wrapper
+`errWriter`，标准库中有多处应用（多出现于测试文件中），这是一种常用套路，要学会应用。
+```
+type errWriter struct {
+    io.Writer
+    err error
+}
+
+func (e *errWriter) Write(buf []byte) (int, error) {
+    if e.err != nil {
+        return 0, e.err
+    }
+
+    var n int
+    n, e.err = e.Writer.Write(buf)
+    return n, nil
+}
+```
+
+> `errWriter` 的用法不是完美的，因为没有提前返回，可能有大量的数据计算被丢弃浪费了。
+
+## Wrap errors 错误包装
+
+如果错误没有就地处理，需要向调用者输出，最终在调用栈的根部需要处理错误，这时将错误输出，
+打印出来的只有基本的错误信息，缺少错误生成时的 file:line 信息、没有调用堆栈。
+
+为了追踪错误，有一种做法是使用 `fmt.Errorf` 以原 err 加一些描述信息生成新的 error 抛出，
+但这种模式与 sentinel errors 或 type assertions 的使用不兼容：
+破坏了原始错误，导致等值判定失败。
+
+* You should only handle errors once. Handling an error means inspecting the
+error value, and making a single decision.
+只应处理错误一次。
+
+如下的代码，在错误处理中，执行了两个任务：记录日志、抛出错误
+```
+func WriteAll(w io.Writer, buf []byte) error {
+    _, err := w.Write(buf)
+    if err != nil {
+        log.Println("unable to write:", err) // 记录错误到日志
+        return err                           // 将错误交给调用者
+    }
+    return nil
+}
+```
+如果在错误上抛的过程中，调用者也会记录并返回原错误，那么会重复输出大量日志，形成噪音。
+
+**Go 中的错误处理契约规定，在出现错误的情况下，不能对其他返回值的内容做出任何假设。**
+
+如果就地处理错误，要处理完整。
+
+* 错误要被日志记录。
+* 应用程序处理错误，保证100%完整性。
+* 之后不再报告当前错误。
+
+### github.com/pkg/errors
+
+`errors.Wrap(err, msg)`: withStack -> (withMessage -> err + msg) + stack 
+`errors.WithMessage(err, msg)`: withMessage -> err + msg  
+`errors.WithStack(err, msg)`: withStack -> err + stack  
+`errors.Cause(err)`: 取出层层包装中的根因  
+`%+v`： `fmt`包扩展格式，打出调用栈
+
+正确使用姿势：
+* 在你的应用代码中，使用 `errors.New` 或者  `errros.Errorf` 返回错误。
+（此处的`errors`包是 `github.com/pkg/errors`包）
+* 如果调用应用代码中其他的函数，通常简单的直接返回。
+* 如果和其他库（第三方库、基础库kit）进行协作，
+考虑使用 `errors.Wrap` 或者 `errors.Wrapf` 保存根因和堆栈信息。
+同样适用于和标准库协作的时候。
+* 直接返回错误，而不是每个错误产生的地方到处打日志。
+* 在程序的顶部或者是工作的 goroutine 顶部(请求入口)，使用 `%+v` 把堆栈详情记录。
+* 使用 `errors.Cause` 获取 root error，再进行和 sentinel error 判定。
+
+总结：
+* Packages that are reusable across many projects only return root error values.  
+**选择 wrap error 是只有 applications 可以选择应用的策略。**
+具有最高可重用性的包只能返回根错误值。
+此机制与 Go 标准库中使用的相同(kit 库的 sql.ErrNoRows)。
+* If the error is not going to be handled, wrap and return up the call stack.  
+这是关于函数/方法调用返回的每个错误的基本问题。
+如果函数/方法不打算处理错误，那么用足够的上下文 wrap errors 并将其返回到调用堆栈中。
+例如，额外的上下文可以是使用的输入参数或失败的查询语句。
+确定您记录的上下文是足够多还是太多的一个好方法是检查日志并验证它们在开发期间是否为您工作。
+* Once an error is handled, it is not allowed to be passed up the call stack any longer.  
+一旦确定函数/方法将处理错误，错误就不再是错误。
+如果函数/方法仍然需要发出返回，则它不能返回错误值。
+它应该只返回零(比如降级处理中，你返回了降级数据，然后需要 return nil)。
+
+## Go 1.13 errors
+
+### Unwrap、Is、As
+
+go1.13为 `errors` 和 `fmt` 标准库包引入了新特性，以简化处理包含其他错误的错误。
+其中最重要的是: 包含另一个错误的 `error` 可以实现返回底层错误的 `Unwrap` 方法。
+如果 `e1.Unwrap()` 返回 `e2`，那么我们说 `e1` 包装 `e2`，您可以展开 `e1` 以获得 `e2`。
+
+go1.13 `errors` 包包含两个用于检查错误的新函数：`Is` 和 `As`。  
+`Is`: 判断根因是否是指定 sentinel error  
+`As`: 尝试展开错误并断言根因为指定类型错误（通过第二个参数，指定类型错误的指针），
+如果成功，`As` 会返回 `true`，同时第二个参数会被赋值为根因
+
+在 Go 1.13中 `fmt.Errorf` 支持新的 `%w` 谓词。  
+用 `%w` 包装错误可用于 `errors.Is` 以及 `errors.As`
+
+> 因为`%w`包装的错误没有包含调用栈信息，使用的并不多，通常使用 `pkg/errors` 的 `Wrapf`更多
+
+#### Customizing error tests with Is and As methods
+
+标准库`errors.Is` 函数中会尝试使用`err.(interface { Is(error) bool })`断言要判断的错误`err`
+是否实现了 `Is(error) bool` 方法。如果实现了，会使用`err`的`Is`方法进行判定。
+
+通过（覆盖/）实现`Is(error) bool` 方法，可以自定义`errors.Is`函数的判断结果。
+因为默认情况下，`Is` 只是比较错误值的指针值。
+
+> 建议在方法/函数备注中说明会返回什么错误，是否被包装
+
+> 通常不返回 sentinel 错误值，而是返回包装值，以携带上下文信息。调用者使用 `Is`进行判断处理。
+
+#### errors & github.com/pkg/errors
+
+`github.com/pkg/errors` 兼容 `errors`，使用相同的签名包装了`errors`中的
+`Is`、`As`、`Unwrap`等函数
+
+> 优先使用 `errors.Wrapf` 而不是 `fmt.Errorf` + `%w`，以包含堆栈信息。
 
 ## Go 2 Error Inspection
+略
+
+> [Proposal: Go 2 Error Inspection](https://go.googlesource.com/proposal/+/master/design/29934-error-values.md)
