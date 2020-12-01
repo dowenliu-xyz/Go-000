@@ -36,10 +36,11 @@ func GetStaff(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
 	staff, err := biz.GetStaff(int64(id))
 	if err != nil {
 		if errors.IsErrResourceNotFound(err) {
+			// 不打印日志，通常id没有找到，给客户端报找不到就可以了，打日志没有必要
 			writeResp(w, kithttp.Status{Code: 404, Message: fmt.Sprintf("未找到id为 %d 的员工记录", id)})
 			return
 		}
-		log.Printf("%+v", err) // 不在一开始打印，通常id没有找到，给客户端报找不到就可以了，打日志没有必要
+		log.Printf("%+v", err)
 		writeResp(w, kithttp.Status{Code: 500, Message: "服务器内部错误"})
 		return
 	}
