@@ -1,8 +1,8 @@
 package biz
 
 import (
-	"github.com/dowenliu-xyz/Go-000/Week02/homework/staff"
-	"github.com/dowenliu-xyz/Go-000/Week02/homework/staff/dao"
+	"github.com/dowenliu-xyz/Go-000/Week02/internal/homework/staff"
+	"github.com/dowenliu-xyz/Go-000/Week02/internal/homework/staff/dao"
 	"github.com/pkg/errors"
 )
 

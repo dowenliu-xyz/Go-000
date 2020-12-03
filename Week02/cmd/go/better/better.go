@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"github.com/dowenliu-xyz/Go-000/Week02/syncx"
+	"github.com/dowenliu-xyz/Go-000/Week02/internal/syncx"
 	"time"
 )
 

@@ -3,8 +3,8 @@ package dao
 import (
 	"database/sql"
 	"fmt"
-	kiterr "github.com/dowenliu-xyz/Go-000/Week02/homework/kit/errors"
-	"github.com/dowenliu-xyz/Go-000/Week02/homework/staff"
+	kiterr "github.com/dowenliu-xyz/Go-000/Week02/internal/homework/kit/errors"
+	"github.com/dowenliu-xyz/Go-000/Week02/internal/homework/staff"
 	"github.com/pkg/errors"
 )
 

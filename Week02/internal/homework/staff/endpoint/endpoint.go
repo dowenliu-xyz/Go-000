@@ -3,9 +3,9 @@ package endpoint
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/dowenliu-xyz/Go-000/Week02/homework/kit/errors"
-	kithttp "github.com/dowenliu-xyz/Go-000/Week02/homework/kit/http"
-	"github.com/dowenliu-xyz/Go-000/Week02/homework/staff/biz"
+	"github.com/dowenliu-xyz/Go-000/Week02/internal/homework/kit/errors"
+	kithttp "github.com/dowenliu-xyz/Go-000/Week02/internal/homework/kit/http"
+	"github.com/dowenliu-xyz/Go-000/Week02/internal/homework/staff/biz"
 	"github.com/julienschmidt/httprouter"
 	"io"
 	"log"
@@ -22,7 +22,7 @@ func writeResp(w io.Writer, resp interface{}) {
 	_, _ = w.Write(bytes)
 }
 
-func GetStaff(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
+func GetStaff(w http.ResponseWriter, _ *http.Request, ps httprouter.Params) {
 	idStr := ps.ByName("id")
 	if idStr == "" {
 		writeResp(w, kithttp.Status{Code: 400, Message: "参数错误：缺少id"})

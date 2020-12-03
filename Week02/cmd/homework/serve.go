@@ -2,8 +2,8 @@ package main
 
 import (
 	"encoding/json"
-	kithttp "github.com/dowenliu-xyz/Go-000/Week02/homework/kit/http"
-	"github.com/dowenliu-xyz/Go-000/Week02/homework/staff/endpoint"
+	kithttp "github.com/dowenliu-xyz/Go-000/Week02/internal/homework/kit/http"
+	"github.com/dowenliu-xyz/Go-000/Week02/internal/homework/staff/endpoint"
 	"github.com/julienschmidt/httprouter"
 	"github.com/pkg/errors"
 	"log"
