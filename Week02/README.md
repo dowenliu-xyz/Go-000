@@ -404,3 +404,13 @@ go1.13 `errors` 包包含两个用于检查错误的新函数：`Is` 和 `As`。
 略
 
 > [Proposal: Go 2 Error Inspection](https://go.googlesource.com/proposal/+/master/design/29934-error-values.md)
+
+
+## Q&A
+
+* 对于调试日志可以使用 [golang/glog](https://github.com/golang/glog) 包
+
+> `glog.Fatal()` 的使用和 panic 一样，不要在业务处理代码中使用。
+> 它比 panic 更不可控，至少 panic 还有机会使用 `recover()` 恢复，`glog.Fatal()`直接调用了 `os.Exit()` !!!
+>
+> main 函数、init 函数资源初始化，如果失败无法正常服务；读配置有问题时，防御性编程
