@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	kithttp "github.com/dowenliu-xyz/Go-000/Week03/internal/kit/http"
 	"github.com/go-kratos/kratos/pkg/sync/errgroup"
 	"github.com/julienschmidt/httprouter"
 	"github.com/pkg/errors"
@@ -189,7 +188,7 @@ func Chain(handler http.Handler) http.Handler {
 					log.Printf("err recoved: %+v", errors.Errorf("%v", err))
 				}
 				w.WriteHeader(500)
-				status := kithttp.Status{Code: 500, Message: "服务器内部错误"}
+				status := Status{Code: 500, Message: "服务器内部错误"}
 				bytes, err := json.Marshal(status)
 				if err != nil {
 					log.Printf("Marshal 结果响应体失败 %v", err)
@@ -200,4 +199,10 @@ func Chain(handler http.Handler) http.Handler {
 		}()
 		handler.ServeHTTP(w, r)
 	})
+}
+
+// 状态码响应结构
+type Status struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
 }
