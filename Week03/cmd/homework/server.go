@@ -119,6 +119,7 @@ func (s *CompositeServer) ListenAndServe() {
 		log.Println("Shutdown.")
 	}
 
+	// 等待所有服务正常关闭
 	for i := 0; i < cap(s.done); i++ {
 		<-s.done
 	}
