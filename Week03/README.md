@@ -1,5 +1,6 @@
 学习笔记
 ---
+[homework](homework.md)
 
 # 管住 Goroutine 的生命周期
 
@@ -52,6 +53,7 @@ What could prevent it from terminating?**
 
 ### 案例2 小心 goroutine 泄漏。
 buggy example:
+
 ```go
 package demo
 
@@ -62,12 +64,12 @@ import "fmt"
 // send on that channel and the channel is never closed so
 // that goroutine will be blocked forever.
 func leak() {
-    ch := make(chan int)
+  ch := make(chan int)
 
-    go func() {
-        val := <-ch
-        fmt.Println("We received a value:", val)
-    }()
+  go func() {
+    val := <-ch
+    fmt.Println("We received a value:", val)
+  }()
 }
 ```
 
@@ -194,3 +196,333 @@ func ListDirectory(dir string, fn func(string))
     >
     > 另外要注意，single machine word 的操作只是保证原子，但不影响可见性。
       保证可见性还是需要使用原语
+
+# sync 包和其他同步工具
+
+## Share Memory By Communicating
+
+Go 鼓励使用 chan 在 goroutine 之间传递对数据的引用。
+
+> https://blog.golang.org/codelab-share
+
+**Do not communicate by share memory, instead, share memory by communicating.** 
+
+## Detecting Race Conditions With Go
+
+Race detector:
+
+* `go build -race` 在线上环境如果不是查问题，不建议使用，对性能有影响
+* go test -race
+
+[demo11](cmd/demo11/demo11.go) 使用 `-race` 标记编译和运行，可以得到 Data Race 的警告输出。
+
+> 写入单个 machine word 将是原子的，但 interface 内部是是两个 machine word 的值：
+> 一个类型指针+一个值指针。对interface的赋值不是原子操作。
+> 另一个goroutine 可能在更改接口值时观察到它的内容。
+> [demo12](cmd/demo12/demo12.go)
+
+> **不要凭直觉判断一个值是原子值**，最好使用并发原语。**Don't be clever.**
+
+> 用好锁：最晚加锁、最早释放。锁里/临界区的代码要轻量，越短越好、越简单越好。
+> 可以不用放到临界区的代码不要放到临界区。
+
+> 加锁时要注意顺序，防止死锁。活跃性问题。
+> 死锁条件：互斥、占用且等待、不可强行占有、循环等待条件。
+> 最简单可行的避免死锁策略是破坏循环等待条件，如按序加锁。其次破坏占用且等待条件，如超时回避。
+> 互斥、不可强行占有这两个条件通常是不可破坏的，否则锁就没有意义了。
+
+没有安全的 data race(safe data race)。您的程序要么没有 data race，要么其操作未定义。
+**Don't be clever.** 请使用 chan、 Mutex 或 atomic
+
+## sync.aotmic
+
+* atomic.Store()
+
+bad case demo: [config.go](cmd/demo13/config.go)
+使用同步原语 [config_test.go](cmd/demo13/config_test.go)
+
+> 这个场景读写相当，RWMutex 的效率比 Mutex 差的多。
+
+> Benchmark 是出结果真相的真理
+
+go test -bench=.
+
+Mutex 相对更重。因为涉及到更多的 goroutine 之间的上下文切换 pack blocking goroutine，
+以及唤醒 goroutine。
+
+* Copy on Write  
+  在微服务降级或者 local cache 场景中经常使用。
+  写时复制指的是，写操作时候复制全量老数据到一个新的对象中，携带上本次新写的数据，
+  之后利用原子替换(atomic.Value)，更新调用者的变量。来完成**无锁访问**共享数据。
+    * Redis bgsave。利用操作系统 COW 机制。
+    * 微服务降级。降级数据缓存的更新。在复制出的新副本中更新，再CAS换成工作副本。
+      进程内缓存，定期后台更新。
+    * 动态更新配置 local cache。
+  > map 是原子赋值。但尽量还是使用 atomic 操作。
+
+* Mutex  
+  演进： 1.8及之前，非公平，有饥饿问题；1.9之后解决了饥饿问题  
+  Mutex 的三种模式：
+  1. Barging 为吞吐量最大化设计的。
+     当锁被释放时，会唤醒第一个等待者，然后把锁给第一个请求锁的人。
+     可能第一个请求锁的人不是第一个等待者，可能导致饥饿。非公平。
+  2. Handsoff。当锁释放时，锁会一直持有直到第一个等待者准备好获取锁。
+     公平，但降低了吞吐量。这种模式迫使释放锁的 goroutine 等待等待锁的 goroutine 获得锁。
+  3. Spinning。请求锁而不得的 goroutine 在进入等待队列前先自旋，
+     期望在接下来有限次CPU时间片执行期间获得锁。
+     自旋在等待队列为空或者应用程序重度使用锁是效果不错。
+     Parking 和 Unparking goroutines 有不低的性能成本开销，相比自旋来说要慢得多。
+  
+  1.8之前，Go使用了 Barging 和 Spinning 的结合实现。
+  Go 1.9 通过添加一个新的饥饿模式来解决先前的 goroutine 饥饿问题，
+  该模式将会在释放时候触发 handsoff：
+  所有等待锁超过一毫秒的 goroutine(也称为有界等待)将被诊断为饥饿。
+  当被标记为饥饿状态时，unlock 方法会 handsoff 把锁直接扔给第一个等待者。
+  在饥饿模式下，自旋也被停用，因为传入的goroutines 将没有机会获取为下一个等待者保留的锁。
+
+## errgroup
+
+
+
+我们把一个复杂的任务，尤其是依赖多个微服务 rpc 需要聚合数据的任务，分解为依赖和并行。
+依赖的意思为: 需要上游 a 的数据才能访问下游 b 的数据进行组合。
+但是并行的意思为: 分解为多个小任务并行执行，最终等全部执行完毕。
+
+* golang.org/x/sync/errgroup
+  > https://pkg.go.dev/golang.org/x/sync/errgroup
+  >
+  > 核心原理: 利用 sync.Waitgroup 管理并行执行的 goroutine
+  >
+  * 并行工作流
+  * 错误处理 或者 优雅降级
+  * context 传播和取消
+  * 利用局部变量+闭包
+
+* github.com/go-kratos/kratos/pkg/sync/errgroup
+  > https://github.com/go-kratos/kratos/tree/master/pkg/sync/errgroup
+  >
+  x/sync/errgroup的问题：
+  * Go(fun()error) 方法只启动了 goroutine 异步处理，但没有做 recover 兜底。
+  * 创建 goroutine 数量没有限制，允许启动大量 goroutine
+  * WithContext() 方法的返回值中 context.Context 是一个 cancelContext ，容易被误用。
+    很容易将返回值中的 context 赋值给参数 context 变量或变量名覆盖，
+    然后将这个 context 传递给其他函数使用。 
+    一旦 errgroup 取消，使用此 context 的其他操作会大量报错
+
+## sync.Pool
+
+sync.Pool 的场景是用来保存和复用临时对象，以减少内存分配，降低 GC 压力(Request-Driven 特别合适)。
+
+Get 返回 Pool 中的任意一个对象。如果 Pool 为空，则调用 New 返回一个新创建的对象。
+放进 Pool 中的对象，会在说不准什么时候被回收掉。
+所以如果事先 Put 进去 100 个对象，下次 Get 的时候发现 Pool 是空也是有可能的。
+不过这个特性的一个好处就在于不用担心 Pool 会一直增长，因为 Go 已经帮你在 Pool 中做了回收机制。
+这个清理过程是在每次垃圾回收之前做的。
+之前每次GC 时都会清空 pool，而在1.13版本中引入了 victim cache，
+会将 pool 内数据拷贝一份，避免 GC 将其清空，即使没有引用的内容也可以保留最多两轮 GC。
+
+> 不要将数据库连接这样的资源型对象放到 sync.Pool中！
+
+# context
+
+通过 context 可实现传递数据、超时控制、级联取消
+
+如何将context集成到API：
+* 显示传递，尽管会污染API
+  The first parameter of a function call。首参数传递 context 对象。
+  比如，参考  net 包 Dialer.DialContext。
+  此函数执行正常的 Dial 操作，但可以通过 context 对象取消函数调用。
+* Optional config on a request structure (不推荐)
+  在第一个 request 对象中携带一个可选的 context 对象。
+  例如 net/http 库的 Request.WithContext，通过携带给定的 context 对象，
+  返回一个新的 Request 对象
+
+## Do not store Contexts inside a struct type
+Do not store Contexts inside a struct type;
+instead, pass a Context explicitly to each function that needs it.
+The Context should be the first parameter, typically named ctx:
+
+Incoming requests to a server should create a Context.
+
+使用 context 的一个很好的心智模型是它应该在程序中流动，应该贯穿你的代码。
+这通常意味着您不希望将其存储在结构体之中。它从一个函数传递到另一个函数，并根据需要进行扩展。
+理想情况下，每个请求都会创建一个 context 对象，并在请求结束时过期。
+
+不存储上下文的一个例外是，当您需要将它放入一个结构中时，该结构纯粹用作通过通道传递的消息。
+
+## context.WithValue
+
+context.WithValue 每次都返回一个新对象，该对象包含 key value 和对父层 context 的引用。
+context.Value 查找是递归的向上层找 key/value，而不是使用一个 map 来存储 key/value，
+这种结构保证了 context 中传递数据的并发安全性，因为这些 key/value 是只读的。
+
+Use context values only for request-scoped data that transits processes and APIs,
+not for passing optional parameters to functions. 比如染色、API重要性、Trace
+> https://github.com/go-kratos/kratos/blob/master/pkg/net/metadata/key.go
+> 
+
+Context.Value should inform, not control.
+context.WithValue 中携带的数据必须是（对接收context的函数/方法）是安全的。
+函数/方法不能通过假定需要的参数来自 context.Value 方法。
+Context.Value 的数据更多的是面向请求的原数据，不应该作为函数/方法的可选参数来使用。
+比如通过 context 传递一个 sql.Tx 对象到 Dao 层使用。
+元数据相对函数参数是更加隐含的、面向请求的。而参数是更加显式的。
+
+同一个 context 对象可以传递给不同的 goroutine 中运行的函数，
+所以 context value 应该是不可变的，以保证 goroutine 可以安全的使用。
+如果 context value 是可变的，如 map, 每次需要变更 context 中的值都应该使用
+context.WithValue 函数。
+> https://pkg.go.dev/google.golang.org/grpc/metadata
+
+对于 value 是 map 的 context，更新 map 中的 k/v 要使用 copy on write 方式，
+以新 map 使用 context.WithValue 创建新的 context。
+
+## context.WithTimeout / context.WithDeadline / context.WithCancel
+> context.Context.Deadline() ，计算超时，配置网络请求超时取消。
+> 参见 kratos pkg/cache/redis/util.go shrinkDeadline
+
+* When a Context is canceled, all Contexts derived from it are also canceled.
+
+Done() 返回 一个 chan，当我们取消某个parent context, 
+实际上会递归层层 cancel 掉自己的 child context 的 done chan
+从而让整个调用链中所有监听 cancel 的 goroutine退出。[demo17](cmd/demo17/demo17.go)
+
+> WithCancel / WithTimeout / WithDeadline 会返回 cancel 函数，
+> 一定要使用 defer 保证 cancel 被调用，防止 goroutine 泄露。
+
+* All blocking/long operations should be cancelable
+
+[demo18](cmd/demo18/demo18.go)
+
+## Final Notes
+* Incoming requests to a server should create a Context.  
+  一般建议使用超时机制。Root 为 Background.
+* Outgoing calls to servers should accept a Context.  
+  调用外部服务一定要显示传递 Context。RPC/http calls，DB queries，etc.
+* Do not store Contexts inside a struct type; instead, pass a Context explicitly to
+  each function that needs it.
+* The chain of function calls between them must propagate the Context.  
+  Context 要在函数调用链间传播。
+* Replace a Context using WithCancel, WithDeadline, WithTimeout, WithValue.  
+  注意，context value 的结构中允许修改字段也不要修改，
+  如果要修改，COW+WithValue 创建新的 Context。
+* When a Context is canceled, call Contexts derived from it are also canceled.
+* The same Context may be passed to functions running in different goroutines;
+  Contexts are safe for simultaneous use by multiple goroutines.
+* Do not pass a nil Context, even if a function permits it. Pass a TODO context if
+  you are unsure about which Context to use.
+* Use context values only for request-scoped data that transits processes and APIs,
+  not for passing optional parameters to functions.  
+  业务逻辑参数要显式传递，不要放到 Context 里。
+* All blocking/long operations should be cancelable.
+  > net.Conn.SetDeadline()
+* Context.Value obscures your program's flow.
+  Context value 不应该影响你的应用的业务逻辑。
+* Context.Value should inform, not control.
+* Try not to use context.Value.
+
+> https://talks.golang.org/2014/gotham-context.slide#1
+
+# Channels
+
+## Unbuffered Channels
+`ch := make(chan struct{})`
+
+无缓冲 chan 没有容量，因此进行任何交换前需要两个 goroutine 同时准备好。
+当 goroutine 试图将一个资源发送到一个无缓冲的通道并且没有goroutine 等待接收该资源时，
+该通道将锁住发送 goroutine 并使其等待。
+当 goroutine 尝试从无缓冲通道接收，并且没有 goroutine 等待发送资源时，
+该通道将锁住接收 goroutine 并使其等待。
+
+**无缓冲信道的本质是保证同步。**
+
+[demo19](cmd/demo19/demo19.go)
+
+* Receive 先于 Send 完成。
+* 好处：100% 保证能收到。
+* 代价：延迟时间未知
+
+## Buffered Channels
+
+buffered channel 具有容量，因此其行为可能有点不同。
+当 goroutine 试图将资源发送到缓冲通道，
+而该通道已满时， 该通道将锁住 goroutine并使其等待缓冲区可用；
+如果通道中有空间，发送可以立即进行，goroutine 可以继续。
+当goroutine 试图从缓冲通道接收数据，而缓冲通道为空时，
+该通道将锁住 goroutine 并使其等待资源被发送。
+
+> 在 chan 创建过程中定义的缓冲区大小可能会极大地影响性能。
+> chan 锁住和解锁 goroutine 时，goroutine parking/unparking 会比较耗时，
+> goroutine 上下文切换消耗比较多。
+
+* Send 先于 Receive 发生。
+* 好处: 延迟更小。
+* 代价: 不保证数据到达，越大的 buffer，越小的保障到达。buffer = 1 时，给你延迟一个消息的保障。
+
+## Design Philosophy 设计理念
+
+* If any given Send on a channel CAN cause the sending goroutine to block:  
+  当向一个 channel 发送时，允许发送 goroutine 阻塞：
+  * Not allowed to use a Buffered channel larger than 1.  
+    不要使用缓冲区大小超过1的有缓冲 channel
+    * Buffers larger than 1 must have reason/measurements.
+      设置缓冲区大小1必须要有充分的理由或压测。
+  * Must know what happens when the sending goroutine blocks.  
+    必须明确知道发送 goroutine 阻塞的原因。
+
+* If any given Send on a channel WON'T cause the sending goroutine to block:  
+  当向一个 channel 发送时，不想让发送 goroutine 阻塞：
+  * You have the exact number of buffers for each send.  
+    如果你要发送的内容数量与缓冲区大小刚好匹配。
+    * Fan Out pattern 使用扇出模式。
+  * You have the buffer measured for max capacity.  
+    如果你要发送的内容数量超出 channel 的最大容量
+    * Drop pattern 放弃部分数据，使用丢弃模式
+      ```
+      select {
+      case ch<-data:
+      default:
+      }
+      ```
+
+* Less is more with buffers. 通道缓冲越少越好。
+  * Don't think about performance when thinking about buffers.  
+    缓冲区大小与性能无关
+  * Buffers can help to reduce blocking latency between signaling.  
+    缓冲区大小只与阻塞延迟有关
+    * Reducing blocking latency towards zero does not necessarily mean better throughput.  
+      阻塞延迟与吞吐量无关。吞吐与消费 channel 的 goroutine 数量有关。
+    * If a buffer of one is giving you good enough throughput then keep it.
+    * Question buffers that are larger than one and measure for size.
+      想要将缓冲区大小设置为超过1时，不要想当然，要通过压测确定缓冲区大小。
+    * Find the smallest buffer possible that provides good enough throughput.  
+      在保证足够好的吞吐量的前提下，缓冲区大小要尽量小。
+
+# Go Concurrency Patterns
+
+* Timing out 超时处理
+  ```
+  select {
+  case data1<-ch1:
+      // if recieved
+  case ch2<-data2:
+      // if sent
+  case <-time.After(duration):
+      // if timeout
+  ```
+* Moving on 放弃数据
+  * Drop pattern
+* Pipeline
+* Fan-out, Fan-in
+* Cancellation
+  * Close 等于 Receive 发生（类似 Buffered）。
+  * 不需要传递数据，或者传递 nil
+  * 非常适合去做超时控制
+* Context
+
+> https://blog.golang.org/concurrency-timeouts  
+> https://blog.golang.org/pipelines  
+> https://talks.golang.org/2013/advconc.slide#1  
+> https://github.com/go-kratos/kratos/tree/master/pkg/sync
+
+> **一定由Sender关闭channel**
