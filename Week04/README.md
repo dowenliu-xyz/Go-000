@@ -105,9 +105,28 @@
 
 ## Kit Project Layout
 
-## 
+> kit 库：工具包/基础库/框架库
 
-# TBD Continue at 00:28:23
+每个公司都应当为不同的微服务建立一个统一的 kit 工具包项目.  
+基础库 kit 为**独立项目**，**公司级建议只有一个**（通过行政手段保证），
+按照功能目录来拆分会带来不少的管理工作，因此建议合并整合。
+
+尽量不要在 Kit 项目中引入第三方依赖。容易受到第三方变更的影响。
+
+> https://www.ardanlabs.com/blog/2017/02/package-oriented-design.html  
+> > To this end, the Kit project is not allowed to have a vendor folder.
+> > If any of packages are dependent on 3rd party packages, 
+> > they must always build against the latest version of those dependences.
+
+kit 项目必须具备的特点:
+* 统一
+* 标准库方式布局
+* 高度抽象
+* 支持插件
+
+## Service Application Project Layout
+
+# TBD Continue at 00:42:50
 
 # API设计
 
