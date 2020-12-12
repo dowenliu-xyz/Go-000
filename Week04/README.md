@@ -126,7 +126,130 @@ kit 项目必须具备的特点:
 
 ## Service Application Project Layout
 
-# TBD Continue at 00:42:50
+* `/api` API协议定义目录。`xxapi.proto` protobuf 文件，以及生成的 go 文件。  
+  B 站通常把 API 文件直接在 proto 文件中描述。
+* `/configs` 配置文件模板或者默认配置。Toml、Yaml、Ini、Properties
+* `/test` 额外的外部测试应用程序和测试数据。  
+  可以随时根据需求构造 `/test` 目录。对于较大的项目，有一个数据子目录是有意义的。
+  例如，你可以使用 `/test/data` 或 `/test/testdata` (如果你需要忽略目录中的内容)。
+  请注意，Go 还会忽略以“.”或“_”开头的目录或文件，因此在如何命名测试数据目录方面有更大的灵活性。
+
+> **不应该包含 `/src`**。不要将项目级别 src 目录 与 Go 用于其工作空间的 src 目录。
+
+```
+├── README.md
+├── api/
+├── cmd/
+├── configs/
+├── go.mod
+├── go.sum
+├── internal/
+└── test/
+```
+
+如果一个 project 里要放置多个微服务的 app (类似 monorepo)：
+* app目录内的每个微服务按照自己的全局唯一名称（比如 “account.service.vip”）来建立目录，
+  如: account/vip/*。
+* 和app平级的目录pkg存放业务有关的公共库(非基础框架库)。
+  如果应用不希望导出这些目录，可以放置到 myapp/internal/pkg 中。
+
+> Service Tree ...
+
+微服务中的 app 服务类型分为：
+
+* interface 对外的BFF服务，接受来自用户的请求， 比如暴露了 HTTP/gRPC 接口。
+* service 对内的微服务，仅接受来自内部其他服务或 者网关的请求，比如暴露了gRPC 接口只对内服务。
+* admin 区别于service，更多是面向运营测的服务， 通常数据权限更高，隔离带来更好的代码级别安全。
+* job 流式任务处理的服务，上游一般依赖message broker。
+* task 定时任务，类似cronjob，部署到task托管平 台中。
+
+> cmd 目录中代码负责启动、关闭、配置初始化等
+
+```
+├── cmd/
+│   ├── myapp1-admin/
+│   ├── myapp1-interface/
+│   ├── myapp1-job/
+│   ├── myapp1-service/
+│   └── myapp1-task/
+```
+
+> 依赖倒置。IoC/DI。
+
+### Layout v1
+```
+├── xxxservice/
+│   ├── api/ # <- 存放 API 定义（protobuf）及对应生成的 stub 代码、swagger.json
+│   ├── cmd/ # <- 存放服务 bin 代码
+│   ├── configs/ # <- 存放服务所需的配置文件
+│   ├── internal/ # <- 避免有同业务下有人跨目录引用内部的 model、dao 等内部 struct 。
+│   │   ├── model/ # <- 存放 Model 对象
+│   │   ├── dao/ # <- 数据读写层，数据库和缓存全部在这层统一处理，包括 cache miss 处理。
+│   │   ├── service/ # <- 组合各种数据访问来构建业务逻辑。
+│   │   ├── server/ # <- 放置 HTTP/gRPC 的路由代码，以及 DTO 转换的代码。
+```
+
+DTO，Data Transfer Object: 
+数据传输对象，泛指用于展示层/ API 层与服务层（业务逻辑层）之间的数据传输对象。
+从概念上讲，包含了 VO（View Object） 视图对象。
+
+直接使用 Model 对象 / Entity 对象，用于数据传输/展示有以下问题：
+* Model 对应的是存储层，与存储一一映射。直接用于传输，会过度暴露字段，需要专门处理
+* 展示形式可能不匹配，或存在兼容性问题，也需要专门处理
+* 以上处理逻辑的代码位置分层定位职责不清，可能导致代码管理混乱
+
+server 层依赖proto定义的服务作为入参，提供快捷的启动服务全局方法。这一层的工作可以被 kit 库功能取代。
+
+在 api 层，protobuf 文件生成了 stub 代码 interface，在 service 层中提供了实现。
+
+DO, Domain Object: 领域对象。
+v1 版中没有引入 DO 对象，或者说使用了贫血模型，缺乏 DTO -> DO 的对象转换。
+
+### Layout v2
+```
+├── CHANGELOG
+├── OWNERS
+├── README
+├── api/
+├── cmd/
+│   ├── myapp1-admin/
+│   ├── myapp1-interface/
+│   ├── myapp1-job/
+│   ├── myapp1-service/
+│   └── myapp1-task/
+├── configs/
+├── go.mod
+└── internal/ # <- 避免有同业务下有人跨目录引用了内部的 biz、 data、service 等内部 struct
+    ├── biz/ # <- 业务逻辑的组装层，类似DDD的domain层。repo 接口在这里定义，使用依赖倒置的原则。
+    ├── data/ # <- 业务数据访问，包含cache、db等封装，实现了biz的repo 接口。
+    ├── pkg/
+    └── service/
+```
+
+data 层：可能会把 data 与 dao 混淆在一起，data 偏重业务的含义，
+它所要做的是将领域对象重新拿出来，去掉了 DDD 的 infra层
+
+service 层，实现了 api 层定义的 stub 接口。
+类似DDD的application层，处理 DTO 到 biz 领域实体的转换(DTO -> DO)，
+同时协同各类 biz 交互， 但是不应处理复杂逻辑。
+
+PO，Persistent Object：持久化对象，
+它跟持久层（通常是关系型数据库）的数据结构形成一一对应的映射关系。
+如果持久层是关系型数据库，那么数据表中的每个字段（或若干个）就对应PO的一个（或若干个）属性。
+
+> https://github.com/facebook/ent
+
+## Lifecycle
+
+依赖注入：1、方便测试；2、单次初始化和复用
+
+所有 HTTP/gRPC 依赖的前置资源初始化，包括 data、biz、service，之后再启动监听服务。
+> https://github.com/go-kratos/kratos/blob/v2/transport/http/service.go
+
+使用 https://github.com/google/wire ，来管理所有资源的依赖注入。
+手撸资源的初始化和关闭是非常繁琐，容易出错的。
+使用依赖注入的思路 DI，结合 google wire，静态的 go generate 生成静态的代码，
+可以在很方便诊断和查看，不是在运行时利用 reflection 实现。
 
 # API设计
 
