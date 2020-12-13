@@ -252,6 +252,108 @@ PO，Persistent Object：持久化对象，
 可以在很方便诊断和查看，不是在运行时利用 reflection 实现。
 
 # API设计
+## gRPC VS HTTP RESTFul
+
+* gRPC 基于 IDL，文档、API定义、代码都是一致的，而 HTTP RESTFul 文档与接口常常脱节。
+* 可以生成各客户端调用 Stub 代码，而 HTTP RESTFul 客户端代码通常需要开发人员手工实现。
+* gRPC 定义了调用使用的 message ，实际上等同于给定了 DTO，
+  促进（强迫）服务端实现进行 DTO <-> DO 间的转换。
+* gRPC 可以方便的实现元数据交换，如认证或跟踪等元数据。HTTP 通常需要将这些数据放置到请求 Header 中。
+* gRPC 使用标准化状态码。
+
+内网间的RPC调用推荐使用 gRPC
+
+## API Project
+
+Q: API 定义 proto 如何共享使用？
+
+一种做法是API定义方/提供方在 `/api` 目录中生成 Client Stub 代码，将代码仓库访问权限授与API使用方，
+API使用方引用 Client Stub 代码。
+这样做项目权限管理比较麻烦，太过宽松，Git 无法进行细粒度权限限制，可能过度暴露API提供方的内部代码。
+
+另一种做法是使用一个统一的 API 仓库，统一检索和规范 API。
+将所有对内对外的项目的 API `/api` 中 protobuf 文件整合到一个统一的项目中。
+> https://github.com/googleapis/googleapis  
+> https://github.com/envoyproxy/data-plane-api  
+> https://github.com/istio/api
+
+* 规范化检查，API Lint
+* 方便跨部门协作
+* 基于git，版本管理
+* API Design review，基于 commit diff
+
+为了控制对 API 文件的读写操作，需要权限管理，使用目录 OWNERS 文件：
+关闭主 API 仓的写权限，使用 Merge Request + Approve 的方式进行管理，
+其中可以使用自动化工具进行检查是否 Merge Request 发起人、API 目录是否匹配进行自动拒绝越权操作。
+
+API protobuf 仓还可以有不同编程语言的子仓，
+通过 Hook，自动推送生成各语言的 Stub 代码到对应语言的代码仓库中
+
+### API Project Layout
+
+项目中定义 proto，以 `api` 为包名根目录：
+```
+├── prject-demo/
+│   ├── api/ # <- 服务 API 定义
+│   │   ├── path/            # <- ↓
+│   │   │   ├── of/          # <- 服务 API 定义路径
+│   │   │   │   ├── service/ # <- ↑
+│   │   │   │   │   ├── v1/ # <- API 定义大版本
+│   │   │   │   │   │   ├── demo.proto # <- API 定义文件
+```
+
+在统一仓库中管理 proto, 以仓库为包名根目录：
+```
+├── api/ # <- 服务API定义
+│   ├── path/                     # <- ↓
+│   │   └── of/                   #
+│   │       └── service1/         #    与各项目中 /api 目录中内容路径对应
+│   │           └── v1/           #
+│   │               ├── api.proto # <- ↑
+│   │               └── OWNERS
+│   └── path/
+│       └── of/
+│           └── service2/
+│               ├── v1/
+│               │   ├── api.proto
+│               │   └── OWNERS
+│               └── v2/
+│                   ├── api.proto
+│                   └── OWNERS
+├── annotations/ # <- 注解定义 options
+├── metadata/ # <- 定义对外服务的统一元数据
+│   ├── locale/
+│   ├── network/
+│   ├── device/
+│   └── ... 
+├── rpc/ # <- 定义统一状态码
+│   └── status.proto
+├── third_party/ # <- 第三方引用
+```
+
+## API Compatibility 兼容性
+向后兼容（非破坏性）的修改：
+* 给API服务定义添加 API 接口。从协议的角度看，这始终是安全的。
+* 给请求消息添加字段。只要客户端在新版和旧版中对该字段的处理不保持一致，添加请求字段就是兼容的。  
+  客户端不应在处理新字段时忽略对旧字段的处理。
+* 给响应消息添加字段。
+  在不改变其他响应字段的行为的前提下，非资源（例如，ListBooksResponse）
+  的响应消息可以扩展而不必破坏客户端的兼容性。
+  即使会引入冗余，先前在响应中填充的任何字段应继续使用相同的语义填充。
+
+向后不兼容（破坏性）的修改：
+* 删除或重命名：服务、字段、方法或枚举值。  
+  从根本上说，如果客户端代码可以引用某些东西，那么删除或重命名它都是不兼容的变化，
+  这时必须修改 major 版本号。
+* 修改字段的类型  
+  即使新类型是传输格式兼容的，这也可能会导致客户端库生成的代码发生变化，因此必须增加 major 版本号。
+  对于编译型静态语言来说，会容易引入编译错误。
+* 修改现有请求的可见行为  
+  客户端通常依赖于 API 行为和语义，即使这样的行为没有被明确支持或记录。
+  因此，在大多数情况下，修改 API 数据的行为或语义将被消费者视为是破坏性的。
+  如果行为没有加密隐藏，您应该假设用户已经发现它，并将依赖于它。
+* 给（会导致更新的）资源消息添加读取/写入字段
+
 
 # 配置管理
 
