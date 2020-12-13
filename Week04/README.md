@@ -354,8 +354,139 @@ API protobuf 仓还可以有不同编程语言的子仓，
   如果行为没有加密隐藏，您应该假设用户已经发现它，并将依赖于它。
 * 给（会导致更新的）资源消息添加读取/写入字段
 
+## API Naming Conventions
+包名应为应用的标识（APP_ID），用于生成 gRPC 请求路径，或者 proto 之前进行引用 Message。  
+proto 文件中声明的包名称应该与产品和服务名称保持一致。  
+带有版本的 API 的软件包名称必须以此版本结尾
+
+如 `/my/package/v1` 为 API 目录，proto 文件中 package 应为：
+```
+package my.package.v1;
+```
+对应的 gRPC RequestURL： `/my.pckage.v1.{service}/{method}`
+
+命名规范示例
+
+| API 名称 | 示例 |
+| --- | --- |
+| 产品名称 | Google Calendar API |
+| 服务名称 | calendar.googleapis.com |
+| 软件包名称 | google.calendar.v3 |
+| 接口名称 | google.calendar.v3.CalendarService |
+| 来源目录 | /google/calendar/v3 |
+| API 名称 | calendar |
+
+> 建议为每个 gRPC 服务方法定义输入输出消息（不要使用 google.protobuf.Empty ，无法扩展），
+> 为未来可能的字段扩展留有空间。
+
+## API Primitive Fields 基础类型字段
+gRPC 默认使用 Protobuf v3 格式，消息结构默认全部都是 optional 字段。  
+如果基础类型字段没有被赋值，默认会赋值为基础类型字段的默认值，0或者""。
+
+> Protobuf v3 中，建议使用：
+> https://github.com/protocolbuffers/protobuf/blob/master/src/google/protobuf/wrappers.proto
+> Warpper 类型的字段，即包装一个 message，使用时变为指针。
+
+## API Errors
+
+### ❌ 全局错误码
+全局错误码，是松散、易被破坏契约的。
+
+在每个服务传播错误的时候，做一次翻译，这样保证每个服务 + 错误枚举，应该是唯一的，
+而且在 proto 定义中是可以写出来文档的。
+> https://github.com/googleapis/googleapis/blob/master/google/rpc/status.proto  
+> https://github.com/googleapis/googleapis/blob/master/google/rpc/error_details.proto#L112
+
+### 使用一小组标准错误配合大量资源
+例如，服务器没有定义不同类型的“找不到”错误，
+而是使用一个标准 google.rpc.Code.NOT_FOUND 错误代码并告诉客户端找不到哪个特定资源。
+状态空间变小降低了文档的复杂性，在客户端库中提供了更好的惯用映射，并降低了客户端的逻辑复杂性，
+同时不限制是否包含可操作信息。
+> https://github.com/googleapis/googleapis/blob/master/google/rpc/error_details.proto
+
+设计 API 错误码时，将业务状态码与 HTTP 状态码进行映射：
+* 方便运维工具监控接口状态，及时报警。
+* 有利用错误码收敛。
+
+gRPC 错误码会映射到 HTTP 状态码。
+
+| HTTP | RPC | 错误消息示例 |
+| :--- | :--- | :--- |
+| 400 | INVALID_ARGUMENT | 请求字段 x.y.z 是 xxx ，预期为 [yyy,zzz] 内的一个。 |
+| 400 | FAILED_PRECONDITION |  资源 xxx 是非空目录，因此无法删除。 |
+| 400 | OUT_OF_RANGE | 客户端指定了无效范围。 |
+| 401 | UNAUTHENTICATED | 由于 OAuth 令牌丢失、无效或过期，请求未通过身份验证。 |
+| 403 | PERMISSION_DENIED | 客户端权限不足。可能的原因包括 OAuth 令牌的覆盖范围不正确、客户端没有权限或者尚未为客户端项目启用 API。 |
+| 404 | NOT_FOUND | 找不到指定的资源，或者请求由于未公开的原因（例如白名单）而被拒绝。 |
+| 409 | ABORTED | 并发冲突，例如读取/修改/写入冲突。 |
+| 409 | ALREADY_EXISTS | 客户端尝试创建的资源已存在。 |
+| 429 | RESOURCE_EXHAUSTED | 资源配额不足或达到速率限制。如需了解详情，客户端应该查找 google.rpc.QuotaFailure 错误详细信息。 |
+| 499 | CANCELLED | 请求被客户端取消。 |
+| 500 | DATA_LOSS | 出现不可恢复的数据丢失或数据损坏。客户端应该向用户报告错误。 |
+| 500 | UNKNOWN | 出现未知的服务器错误。通常是服务器错误。 |
+| 500 | INTERNAL | 出现内部服务器错误。通常是服务器错误。 |
+| 501 | NOT_IMPLEMENTED | API 方法未通过服务器实现。 |
+| 503 | UNAVAILABLE | 服务不可用。通常是服务器已关闭。 |
+| 504 | DEADLINE_EXCEEDED | 超出请求时限。仅当调用者设置的时限比方法的默认时限短（即请求的时限不足以让服务器处理请求）并且请求未在时限范围内完成时，才会发生这种情况。 |
+> https://cloud.google.com/apis/design/errors#handling_errors
+
+### 错误传播
+> https://cloud.google.com/apis/design/errors#error_propagation
+
+如果您的 API 服务依赖于其他服务，则不应盲目地将这些服务的错误传播到客户端。
+在翻译错误时，建议执行以下操作：
+* 隐藏实现详细信息和机密信息
+* 调整负责该错误的一方。例如，从另一个服务接收到 INVALID_ARGUMENT 错误的服务器应该将
+  INTERNAL 传播给它自己的调用者。
+> 吞掉外部依赖返回的错误，响应自己的错误，使用`errors.Wrapf`。  
+> 如底层的 `sql.ErrNoRows` 而响应给客户端 NotFound:
+> ```
+> func GetUsers() ([]User, error) {
+>     sql := ...
+>     rows, err := db.Query(sql)
+>     if err != nil {
+>         ...
+>     }
+>     ...
+>     err := rows.Err()
+>     if err != nil {
+>         if err == sql.ErrNoRows {
+>             return nil, errors.Wrapf(code.ErrNotFound,
+>                 "query %q failed(%v)", sql err)
+>         }
+>         ...
+>     }
+>     ...
+> }
+> ```
+
+> Kratos v2 错误处理  
+> https://github.com/go-kratos/kratos/blob/v2/errors/errors.go  
+> https://github.com/go-kratos/kratos/blob/v2/errors/codes.go  
+> 
+
+gRPC 将错误放到元数据中传递给客户端，这样：
+* 不会污染请求/响应消息体
+* 错误只需要在调用返回中判断一次，不必再次从消息体中取出判断业务错误
+
+> service error (Server side) -> gRPC error -> service error (Client side)
+
+## API Design
+
+FieldMask 部分更新方案。 `google.protobuf.FieldMask`
+> https://github.com/protocolbuffers/protobuf/blob/master/src/google/protobuf/field_mask.proto
+
+客户端可以指定需要更新的字段信息：
+```
+paths: "author"
+paths: "submessage.submessage.field"
+```
+空 FieldMask 默认应用到所有字段
+
+⭐️ 极力推荐：谷歌API设计指南：https://cloud.google.com/apis/design
 
 # 配置管理
+# Continue At 97:50
 
 # 包管理
 
