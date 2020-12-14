@@ -486,9 +486,50 @@ paths: "submessage.submessage.field"
 ⭐️ 极力推荐：谷歌API设计指南：https://cloud.google.com/apis/design
 
 # 配置管理
-# Continue At 97:50
+大体分为四类：
+* 环境（变量）配置
+  * Region 区域。 如华北、华南。 大区
+  * Zone 可用区。如杭州01、青岛01。
+  * Cluster 集群
+  * Environment 环境 如PRD、UAT、FAT、test、dev
+  * Color 染色信息
+  * Discovery 服务发现用的 IP 、端口号等信息。
+  * AppID 应用id，
+  * Host 主机名
+  
+  之类的环境信息，通过在线运行时平台打入到容器或者物理机，供 kit 库读取使用。
+* 静态配置
+  资源需要初始化的配置信息，比如 http/gRPC server、redis、mysql 等。
+  这类资源在线变更配置的风险非常大，不鼓励 on-the-fly 变更，很可能会导致业务出现不可预期的事故。
+  **变更静态配置和发布 binaray app 没有区别，应该走一次迭代发布的流程。**
+* 动态配置
+  应用程序可能需要一些在线的开关，来控制业务的一些简单策略，动态变更业务流，会频繁的调整和使用。
+  这类在线开头配置建议使用基础类型（int, bool等）配置，
+  同时可以考虑结合类似 https://pkg.go.dev/expvar 来结合使用。
+* 全局配置
+  通常，我们依赖的各类组件、中间件都有大量的默认配置或者指定配置，
+  在各个项目里大量拷贝复制，容易出现意外，
+  所以我们使用全局配置模板来定制化常用的组件，然后再特化的应用里进行局部替换。
+
+## Functional options
+
+
+# Continue At 108:10
 
 # 包管理
 
 # 测试
 > 单元测试是系统演进中基层稳定可靠的必要保证。
+
+
+
+
+
+
+
+
+
+
+
+
+
