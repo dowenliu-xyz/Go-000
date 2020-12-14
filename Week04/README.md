@@ -512,9 +512,179 @@ paths: "submessage.submessage.field"
   所以我们使用全局配置模板来定制化常用的组件，然后再特化的应用里进行局部替换。
 
 ## Functional options
+### 原由
+假设以下场景：提供一个函数，连接到Redis，并返回连接+error。  
+可以轻易的给出以下代码：
+```
+// DialTimeout acts like Dial for establishing the
+// connection to the server, writing a command and reading a reply.
+func Dial(network, address string) (Conn, error)
+```
+但使用方很快提出了新的需求：我要自定义超时时间！”，“我要设定 Database！”，
+“我要控制连接池的策略！”，“我要安全使用 Redis，让我填一下 Password！”，
+“可以提供一下慢查询请求记录，并且可以设置 slowlog 时间？”
+
+于是作为API提供者，你需要增加一系列函数以提供新特性：
+```
+// DialTimeout acts like Dial for establishing the
+// connection to the server, writing a command and reading a reply.
+func Dial(network, address string) (Conn, error)
+
+// DialTimeout acts like Dial but takes timeouts for establishing the
+// connection to the server, writing a command and reading a reply.
+func DialTimeout(network, address string, connectTimeout, readTimeout, writeTimeout time.Duration) (Conn, error)
+
+// DialDatabase acts like Dial but takes database for establishing the
+// connection to the server, writing a command and reading a reply.
+func DialDatabase(network, address string, database int) (Conn, error)
+
+// DialPool
+func DialPool...
+```
+
+`net/http` 中 `Server` 结构体提供了另一种思路：  
+在组装配置阶段，向`Server` 结构体中填充需要配置的字段，
+不需要配置的字段不填充，让 `Server` 对象使用默认值填充或执行默认行为。这样做：  
+好处：
+* 配置字段定义在结构体中，可以为字段编写全面（且复杂）的说明文档。
+
+不好的地方：
+* 字段的默认值，代表的含义或导致的行为必须有文档中说明。
+* 字段是否可选还是必需，只能在文档中指出，无法在编译阶段进行检查。
+
+参考`Server`的定义与使用方式，我们很直接的想到可以将之前场景中的各种需求封装归集到 `Config` 结构体中：
+```
+// Config redis settings.
+type Config struct {
+  *pool.Config
+  Addr string
+  Auth string
+  DialTimeout time.Duration
+  ReadTimeout time.Duration
+  WriteTimeout time.Duration
+}
+```
+
+Config 对象如何使用呢？
+```
+// NewConn new a redis conn. [1]
+func NewConn(c Config) (cn Conn, err error)
+
+// NewConn new a redis conn. [2]
+func NewConn(c *Config) (cn Conn, err error)
+
+// NewConn new a redis conn. [3]
+func NewConn(c ...*Config) (cn Conn, err error)
+```
+* [1]的方式可以保证`NewConn(c)`之后，修改 `c` 不会对 `cn` 有影响，
+  因为 `Config` 参数 `c` 在传入后被复制，`NewConn` 使用的是参数 `c` 的复本。  
+  但[1]的方式无法传入 `nil`，无法在 `NewConn` 函数内提供配置默认值。
+* [2]的方式在`NewConn(c)` 之后，修改 `c` 的字段值，对 `cn` 的影响是未知的，Undefined，
+  调用者必须按照君子约定，不再修改 `c`。
+  好处就是，如果 `NewConn` 传入 `nil`，`NewConn` 可以应用一个默认配置值
+* [1]、[2] 的方式都有一个共同的问题，无法在 `Config` 中区分可选必选字段，并为可选字段提供默认值。
+  [3] 的方式可以帮助应用默认配置：传入两个 `Config`，第一个提供完整的默认配置，第二个提供覆盖配置，
+  在 `NewConn` 内部进行配置合并。
+  但因为方法参数签名使用了`...` 无法限制调用者会传入多少个 `Config` 对象。
+
+> 尽量不要向公开函数传 nil 参数
+> 
+> “I believe that we, as Go programmers,
+> should work hard to ensure that nil is never a parameter
+> that needs to be passed to any public function.”
+> – Dave Cheney
+### Functional options
+> [Self-referential functions and the design of options](https://commandcenter.blogspot.com/2014/01/self-referential-functions-and-design.html)
+> by Rob Pike
+> 
+> [Functional options for friendly APIs](https://dave.cheney.net/2014/10/17/functional-options-for-friendly-apis)
+> by Dave Cheney
+
+通过参数指定必需参数和可选配置。
+```
+// DialOption specifies an option for dialing a Redis server.
+type DialOption struct {
+  f func(*dialOptions)
+}
+
+// Dial connects to the Redis server at the given network and
+// address using the specified options.
+func Dial(network, address string, options ...DialOption) (Conn, error) {
+  do := dialOptions{ // 配置选项结构体对象
+    dial: net.Dial,
+  }
+  for _, option := range options {
+    option.f(&do)
+  } // ...
+}
+```
+通过方法签名，强制保证了必需参数，同时，使用不定长的 `options` 参数，指定对可选参数的设置行为。
+> https://github.com/go-kratos/kratos/blob/master/pkg/cache/redis/conn.go#L98
+
+前面的代码中 `DialOption` 还可以直接简化为 `type DialOption func(*dialOptions)`
+```
+// DialOption specifies an option for dialing a Redis server.
+type DialOption func(*dialOptions)
 
 
-# Continue At 108:10
+// Dial connects to the Redis server at the given network and
+// address using the specified options.
+func Dial(network, address string, options ...DialOption) (Conn, error) {
+  do := dialOptions{
+    dial: net.Dial,
+  }
+  for _, option := range options {
+    option(&do)
+  }
+  // ...
+}
+```
+高级玩法：清理/还原模式，应用配置并使用，用后还原配置：
+```
+type option func(f *Foo) option // 注意这里返回了 option
+
+// Verbosity sets Foo's verbosity level to v.
+func Verbosity(v int) option {
+  return func(f *Foo) option {
+    prev := f.verbosity
+    f.verbosity = v
+    return Verbosity(prev)
+  }
+}
+func DoSomethingVerbosely(foo *Foo, verbosity int) {
+  // Could combine the next two lines,
+  // with some loss of readability.
+  prev := foo.Option(pkg.Verbosity(verbosity)) // 应用配置
+  defer foo.Option(prev) // defer 还原配置
+  // ... do some stuff with foo under high verbosity.
+}
+```
+DialOption + dialOptions 仍然有一些缺点：
+dialOptions 是库内置且隐藏结构体，配置项只能由库定义无法外部扩展；
+DialOption 方法也只能由库自己提供，外部无法编写。
+
+gRPC `CallOption` 的做法更进一步，它将选项的定义也交由外部扩展：
+```
+type GreeterClient interface {
+SayHello(ctx context.Context, in *HelloRequest, opts ...grpc.CallOption) (*HelloReply, error)
+}
+
+type CallOption interface {
+before(*callInfo) error
+after(*callInfo)
+}
+// EmptyCallOption does not alter the Call configuration.
+type EmptyCallOption struct{} // 这个类型实现了 CallOption 接口
+
+// TimeoutCallOption timeout option.
+type TimeoutCallOption struct {
+grpc.EmptyCallOption // 内嵌 EmptyCallOption 自动实现 CallOption 接口
+Timeout time.Duration
+}
+```
+
+
+# Continue At 124:10
 
 # 包管理
 
