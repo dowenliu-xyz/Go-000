@@ -683,23 +683,202 @@ Timeout time.Duration
 }
 ```
 
+### Hybrid APIs 混合 API
+使用 `DialOption` + `dialOptions` 这样的 Functional Options ，不方便映射加载 JSON/YAML 配置，
+所以不得不需要保留 `func NewConn(c *Config) (Conn, error)`这样的配置函数。
 
-# Continue At 124:10
+其实这种结果是因为没有将加载配置文件和配置选项这两件事解耦。
+
+### Configuration & APIs
+
+“For example, both your infrastructure and interface might use plain JSON.
+**However, avoid tight coupling between the data format you use as the
+interface and the data format you use internally.**
+For example, you may use a data structure internally that contains the data
+structure consumed from configuration.
+The internal data structure might also contain completely
+implementation-specific data that never needs to be surfaced outside of the system.”  
+  -- the-site-reliability-workbook 2
+
+> the-site-reliability-workbook 2
+
+
+> 编辑配置用的工具最好支持：
+> * 语义验证
+> * 语法高亮
+> * Lint
+> * 格式化
+
+* 仅保留 options API
+* config file 和 options struct 解耦
+  ```
+  package redis
+  
+  // Option configures how we set up the connection.
+  type Option interface {
+    apply(*options)
+  }
+  ```
+  ```
+  // Options apply config to options.
+  func (c *Config) Options() []redis.Options {
+    return []redis.Options{
+      redis.DialDatabase(c.Database),
+      redis.DialPassword(c.Password),
+      redis.DialReadTimeout(c.ReadTimeout),
+    }
+  }
+  
+  func main() {
+    // instead use load yaml file.
+    c := &Config{
+      Network: "tcp",
+      Addr: "127.0.0.1:3389",
+      Database: 1,
+      Password: "Hello",
+      ReadTimeout: 1 * time.Second,
+    }
+    r, _ := redis.Dial(c.Network, c.Addr, c.Options()...)
+  }
+  ```
+* 使用 Protobuf 定义配置文件、 YAML 存储配置文件
+  使用 protobuf 定义配置文件:
+  * 可以为配置字段定义加注解，加验证规则
+  * 多语言之间配置保持一致
+  ```
+  syntax = "proto3";
+  
+  import "google/protobuf/duration.proto";
+  
+  package config.redis.v1;
+  
+  // redis config.
+  message redis {
+    string network = 1;
+    string address = 2;
+    int32 database = 3;
+    string password = 4;
+    google.protobuf.Duration read_timeout = 5;
+  }
+  ```
+  由 protobuf 文件生成 Config 结构，应用 YAML 数据恢复配置
+  ```
+  func ApplyYAML(s *redis.Config, yml string) error {
+    js, err := yaml.YAMLToJSON([]byte(yml))
+    if err != nil {
+      return err
+    }
+    return ApplyJSON(s, string(js))
+  }
+  // Options apply config to options.
+  func Options(c *redis.Config) []redis.Options {
+    return []redis.Options{
+      redis.DialDatabase(c.Database),
+      redis.DialPassword(c.Password),
+      redis.DialReadTimeout(c.ReadTimeout),
+    }
+  }
+  func main() {
+    // load config file from yaml.
+    c := new(redis.Config)
+    _ = ApplyYAML(c, loadConfig())
+    r, _ := redis.Dial(c.Network, c.Address, Options(c)...)
+  }
+  ```
+
+### Configuration Best Practice
+代码更改系统功能是一个冗长且复杂的过程，往往还涉及Review、测试等流程，
+但更改单个配置选项可能会对功能产生重大影响，通常配置还未经测试。配置的目标：
+* 避免复杂
+* 多样的配置
+* 简单化努力
+* 以基础设施 -> 面向用户进行转变
+* 配置的必选项和可选项
+* 配置的防御编程
+* 权限和变更跟踪
+* 配置的版本和应用对齐
+* 安全的配置变更：逐步部署、回滚更改、自动回滚
 
 # 包管理
+> https://github.com/gomods/athens  
+> https://goproxy.cn
+
+> https://blog.golang.org/modules2019  
+> https://blog.golang.org/using-go-modules  
+> https://blog.golang.org/migrating-to-go-modules  
+> https://blog.golang.org/module-mirror-launch  
+> https://blog.golang.org/publishing-go-modules  
+> https://blog.golang.org/v2-go-modules  
+> https://blog.golang.org/module-compatibility
+
+Go 项目依赖都是源码依赖。
+
+Go Mod 依赖版本冲突的话比较难以解决。
 
 # 测试
 > 单元测试是系统演进中基层稳定可靠的必要保证。
 
+* 小型测试带来优秀的代码质量、良好的异常处理、优雅的错误报告；大中型测试会带来整体产品质量和数据验证。
+* 不同类型的项目，对测试的需求不同，总体上有一个经验法则，即70/20/10原则：70%是小型测试，20%是中型测试，10%是大型测试。
+* 如果一个项目是面向用户的，拥有较高的集成度，或者用户接口比较复杂，他们就应该有更多的中型和大型测试；如果是基础平台或者面向数据的项目，例如索引或网络爬虫，则最好有大量的小型测试，中型测试和大型测试的数量要求会少很多。
+
+> Kit 库项目一定要写大量的单元测试。
+> 
+> 中间件项目需要大量的单元测试和混沌测试。
+> 
+> 微服务 API，直接做接口测试就好了。
+
+## Unit Test
+“自动化实现的，用于验证一个单独函数或独立功能模块的代码是否按照预期工作，
+着重于典型功能性问题、数据损坏、错误条件和大小差一错误
+（译注：大小差一(off-by-one)错误是一类常见的程序设计错误）等方面的验证”  
+-- 《Google软件测试之道》
 
 
+单元测试的基本要求：
+* 快速
+* 环境一致
+* 任意顺序  
+  sync.Once
+* 并行
+
+> https://pkg.go.dev/testing
+
+利用 go 官方提供的 subtests + Gomock 完成整个单元测试。
+* /api  
+  比较适合进行集成测试，直接测试 API，使用 API 测试框架(例如: yapi)，维护大量业务测试 case。
+* /data  
+  docker compose 把底层基础设施真实模拟，因此可以去掉 infra 的抽象层。
+* /biz  
+  依赖  repo、rpc client，利用 gomock 模拟 interface 的实现，来进行业务单元测试。
+* /service
+  依赖 biz 的实现，构建 biz 的实现类传入，进行单元测试。
+
+基于 git branch 进行 feature 开发，本地进行 unittest，
+之后提交 gitlab merge request 进行 CI 的单元测试，
+基于 feature branch 进行构建，完成功能测试，
+之后合并 master，进行集成测试，上线后进行回归测试。
+
+> Without integration tests, it's difficult to trust the end-to-end operation of a web service.
+> 
+> 对于微服务应用，不要做 /data 、/biz 、/service的单元测试，直接使用 API 测试框架（如 YAPI）测试 API 接口即可。
+
+基于 docker-compose 实现跨平台跨语言环境的容器依赖管理方案，
+以解决运行 unittest 场景下的(mysql, redis, mc)容器依赖问题:
+* 本地安装 Docker。
+* 无侵入式的环境初始化。
+* 快速重置环境。
+* 随时随地运行(不依赖外部服务)。
+* 语义式 API 声明资源。
+* 真实外部依赖，而非 in-process 模拟。
+
+使用容器进行单元测试需要注意：
+* 正确的对容器内服务进行健康检测，避免unittest 启动时候资源还未 ready。
+* 应该交由 app 自己来初始化数据，比如 db 的scheme，初始的 sql 数据等，
+  为了满足测试的一致性，在每次结束后，都会销毁容器。
 
 
-
-
-
-
-
-
-
-
+* 在单元测试开始前，导入封装好的 testing 库，方便启动和销毁容器。
+* 对于 service 的单元测试，使用 gomock 等库把 dao mock 掉，所以在设计包的时候，应该面向抽象编程。
+* 在本地执行依赖 Docker，在 CI 环境里执行Unittest，需要考虑在物理机里的 Docker 网络，
+  或者在 Docker 里再次启动一个 Docker。
