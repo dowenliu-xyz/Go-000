@@ -1,0 +1,27 @@
+services:
+  postgres:
+    image: library/mysql:5.6
+    ports:
+      - 13306:3306
+    environment:
+      - MYSQL_ROOT_PASSWORD=root
+      - TZ=Asia/Shanghai
+    volumes:
+    - .:/docker-entrypoint-initdb.d
+    command:
+      - '--character-set-server=utf8'
+      - '--collation-server=utf8_unicode_ci'
+    healthcheck:
+      test: ["CMD", "mysqladmin" ,"ping", "--protocol=tcp"]
+      timeout: 20s
+      interval: 1s
+      retries: 20
+# 简化实现暂不使用 Redis
+#  redis:
+#    image: library/redis:6.0
+#    ports:
+#      - 6379:6379
+#    healthcheck:
+#      test: ["CMD", "redis-cli", "ping"]
+#      timeout: 20s
+#      interval: 50ms
