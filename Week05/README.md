@@ -212,42 +212,137 @@ comment_content: 评论内容的表，包含评论的具体内容。
 
 ### 缓存设计
 
+* `comment_subject_cache` [string]
+
+| part | type | comment |
+|:---|:---|:---|
+| key | string | cache_key。 oid_type。 object_id "_" object_type |
+| value | bytes | subject marshal string |
+| expire | duration | 24h |
+
+对应主题的缓存，value 使用 protobuf 序列化的方式存入。
+> 我们早期使用 memcache 来进行缓存，因为 redis 早期单线程模型，吞吐能力不高。
+
+* `comment_index_cache` [sorted set]
+
+| part | type | comment |
+|:---|:---|:---|
+| key | string | cache_key。oid_type_[sort]，其中 sort 为排序方式，0：楼层，1：回复数量 |
+| member | int64 | comment_id，评论ID |
+| score | double | 楼层号、回复数量、排序得分 |
+| expire | duration | 8h |
+
+使用 redis sortedset 进行索引的缓存，索引即数据的组织顺序，而非数据内容。  
+Cache miss 的构建，是在 kafka 的消费者中处理，预加载少量数据，通过增量加载的方式逐渐预热填充缓存。  
+redis sortedset skiplist 的实现，可以做到
+O(logN) （找到开始位置） + O(M) （加载M条） 的查询时间复杂度，效率很高。
+
+> sorted set 是要增量追加的，因此必须判定 key 存在之后才能 zdd。
+> 
+> 操作时序: exist -> zadd 不能保证 key 存在，可能在 exist 后 zadd 前，key 刚好过期。
+> 应该使用时序：expire -> zadd。通过 expire 延长 key 的过期时间。
+> 
+> 过期剔除不一定是因为过期，可能是因为内存空间不足，按淘汰策略优先剔除了过期时间比较近的 key。
+> 通过 expire “续命”，通常可以保证 key 不会被剔除。
+
+* `comment_content_cache` [string]
+
+| part | type | comment |
+|:---|:---|:---|
+| key | string | cache_key。comment_id |
+| value | bytes | content marshal string |
+| expire | duration | 24h |
+
+对应评论内容数据，使用 protobuf 序列化的方式存入。类似的我们早期使用 memcache 进行缓存。
+
+> 在通过 `comment_index_cache` 得到 id 集合后，使用 mget 从 `comment_content_cache`
+> 批量取数据，不要使用反复 get 的方式。粗粒度获取。
+
+> 增量加载 + lazy 加载。通常不会把所有数据都加载到缓存中，用户通常不会查看所有数据，
+> 通常只 read ahead 从 cache miss 位置向后继续加载几页数据。
+> 在读缓存时，发现读到 comment_index_cache 缓存末尾（不一定 Cache miss），
+> 结合 comment_subject_cache 中floor 数可以判断是否需要继续加载还是 EOF。
+
 ## 可用性设计
+### Singleflight 单飞、归并回源
+> https://pkg.go.dev/golang.org/x/sync/singleflight
 
+对于热门的主题，如果存在缓存穿透的情况，会导致大量的同进程、跨进程的数据回源到存储层，
+可能会引起存储过载的情况。
 
+使用归并回源的思路，同进程只交给一个人去获取 mysql 数据，然后批量返回。
+同时这个 lease owner 投递一个 kafka 消息，做 index cache 的 recovery 操作。
+这样可以大大减少 mysql 的压力，以及大量透穿导致的密集写 kafka 的问题。
 
+更进一步的，后续连续的请求，仍然可能会短时 cache miss，
+我们可以在进程内设置一个 short-lived flag，
+标记最近有一个人投递了 cache rebuild 的消息，直接 drop。
 
+> kafka go 客户端库 https://github.com/Shopify/sarama
 
+> 不使用分页式锁的原因：
+> * 太过复杂，容易出问题
+> * 不方便调试
 
+> 基于 MySQL 主从复制实现的读写分离，主从节点之前可能有短暂的不一致。
+> 对于评论这样的对一致性要求没有那么高的系统可以采用。
+> 主从复制的机制主要是为了备份，必要时进行主从切换故障恢复。
 
+> ❗️ MySQL 驱动层限流， kratos
 
+### 热点
 
+> 将次要操作从主流程中分离出来，防止它的延迟、阻塞拖累主流程。
+> 
+> 如果没有强实时性要求，可以异步处理。kafka 或 订阅 binlog。
 
+> 一个 key 的消费延迟会拖累它所在 kafka partition 所有的 key 的消费。  
+> 可以通过 N 个子消息组并行消费同一 partition，对 partition 再 hash，减少影响面。
+> 即从一个消息者消费一个 partition 所有 key 的1对1模型转换为
+> 多个消息者分别消费一个 partition 中各自关注的 key 的 N对1模型
+> （不关注的 key 直接 ack 跳过）。
 
+流量热点是因为突然热门的主题，被高频次的访问，
+因为底层的 cache 设计，一般是按照主题 key 进行一致性 hash 来进行分片，
+但是**热点 key 一定命中某一个节点**，这时候 remote cache 可能会变为瓶颈，
+因此**做 cache 的升级 local cache 是有必要的**，
+我们一般使用单进程自适应发现热点的思路，附加一个短时的 ttl local cache，
+可以在进程内吞掉大量的读请求。
 
+> 应对热点，通常缓存需要多 replica 设计。
 
+在内存中使用 hashmap 统计每个 key 的访问频次，这里可以使用滑动窗口统计，
+即每个窗口中，维护一个 hashmap，之后统计所有未过去的 bucket，汇总所有 key 的数据。
 
+之后使用小堆计算 TopK 的数据，自动进行热点识别。
 
+![sliding-window-statistics.png](sliding-window-statistics.png)
 
+---
+# 扩展
 
+> for + 闭包的 bug !!!。一定要通过传参或定义同名变量进行“屏蔽”  
+> 参考：[Go语言核心36讲第05课](https://time.geekbang.org/column/article/13562) 、
+> [Kratos v2 app.go](https://github.com/go-kratos/kratos/blob/v2/app.go#L110)
 
+> Maglev Hash
 
+> CDN、静态资源服务的域名不要与主站使用相同的顶级域名，避免同源。
+> * 防止Cookie带到CDN服务器，形成安全风险。
+> * 节省流量，防止同源 Http Header 占用 Http 流量。
 
+> errors.Wrapf(errors.Internal("1001", "内部错误"), "query: %s error(%v)", sql, err)
+> 
+> 内部的 errors.Internal 用于 Unwrap 后 http/grpc 报错，外部 Wrapf 的内容则可以用于日志输出。
 
+> repo 层，**一定不能忽略 rows.Err()**
 
+> CodeReview:
+> * 人员备份
+> * 知识共享 && 教学工具
+> * Peer Pressure，内部互相施压竞争、可以促进技能水平提升，同时也提高了代码质量。
+> * Ownership 。主人翁意识，提高开发人员的责任心。
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+> 大仓 vs 分仓
+> 大仓：方便统一版本，不容易分项目重复造轮子。坏处：不好做安全；编译工具要求比较高，否则编译速度会比较慢。
+> 分仓：不好管控重复造轮子问题，不方便收拢错误、版本。不好推动基础库升级。
